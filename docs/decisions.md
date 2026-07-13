@@ -103,8 +103,8 @@ The tradeoff is speed — see the smoke-test timing table in
 
 ## 4. Open decisions (to be filled)
 
-- [ ] Text cleaning strategy (header/footer detection, ligature fixes)
-- [ ] Chunking strategy (size, overlap, structure-awareness)
+- [x] Text cleaning strategy (header/footer detection, ligature fixes) — see §5
+- [x] Chunking strategy (size, overlap, structure-awareness) — see §6
 - [ ] Embedding model choice
 - [ ] Vector store (FAISS flat vs. HNSW; metadata storage)
 - [ ] Retrieval configuration (k, hybrid on/off, reranker on/off)
@@ -137,3 +137,101 @@ type (2–5 pages announcing specific material events). No scanned or
 otherwise-broken documents in the corpus.
 
 **Reproducibility:** Full parse ledger in `data/parse_manifest.csv`.
+
+---
+
+## 5. Text cleaning
+
+**Decision:** A conservative, auditable cleaning pass applied once over the
+parsed pages. `data/parsed/{doc}.parquet` -> `data/clean/{doc}.parquet`
+(same one-row-per-page schema, cleaned `text`). Script:
+`src/ingest/clean_pages.py`.
+
+**Steps:**
+1. **Unicode NFKC normalization** — folds ligatures (ﬁ→fi, ﬂ→fl),
+   non-breaking spaces → regular spaces, and full-width/compatibility
+   characters to canonical forms.
+2. **Per-line whitespace** — strip line ends; collapse internal runs of
+   spaces/tabs to a single space.
+3. **Running header/footer removal** — a line is stripped only if it (a)
+   sits in the top-3 or bottom-3 lines of a page, (b) is ≤ 60 chars, and
+   (c) its digit-masked signature (`\d+`→`#`, lowercased) recurs on ≥ 50%
+   of the document's pages. Documents with < 4 pages are exempt (protects
+   short 8-Ks). This positional + frequency gate targets true running
+   heads and page numbers, never table content.
+4. **Blank-line collapse** — 2+ consecutive blank lines → one.
+
+**Why conservative over aggressive:** the decisive risk for a financial
+RAG is destroying table-row coherence (see §3). By constraining
+header/footer removal to page *edges* and requiring cross-page recurrence,
+mid-page table rows — where the numeric evidence lives — are provably
+untouched. Verified on `APPLE_2022_10K` p41 (marketable-securities table)
+and `NETFLIX_2023Q2_10Q` p20 (results-of-operations table): both are
+byte-identical before/after.
+
+**Outcome (full corpus, 368 docs / 54,120 pages, ~9s):**
+- Only **0.28%** of corpus characters removed (mean 0.33%/doc, max 1.91%).
+- Top removals are all legitimate boilerplate: Corning's
+  `© 2015 Corning Incorporated. All rights reserved.` footer, Footlocker's
+  `Third Quarter 2023 Form 10-Q Page 5` footer, Oracle's
+  `Index to Financial Statements` header.
+- 59/368 docs had no detectable running head and were left untouched.
+
+**Known tradeoff:** the bare `#` signature (a page-edge line that is only a
+number) also removes standalone numeric lines. In SEC filings such
+edge-isolated numbers are page numbers, not data (data always appears in
+multi-value rows), so the risk is negligible and bounded to page edges.
+
+**Reproducibility:** every removed signature is logged per-doc in
+`data/clean_manifest.csv` (`pct_removed`, `n_boilerplate`,
+`boilerplate_sigs`).
+
+---
+
+## 6. Chunking
+
+**Decision:** Config-driven recursive, page-bounded chunking.
+`data/clean/{doc}.parquet` -> `data/chunks/{config.name}.parquet` (one row
+per chunk). Script: `src/chunk/build_chunks.py`; baseline config
+`configs/chunk_baseline.yaml`. This is the primary experimental knob, so the
+strategy and parameters live entirely in YAML — the Phase-E sweep copies the
+baseline file and varies only `chunk_size` / `chunk_overlap`.
+
+**Baseline parameters:** `chunk_size=256` tokens, `chunk_overlap=50` (~20%),
+`strategy=recursive`, `cross_page=false`, token ruler = the baseline embedder
+`BAAI/bge-small-en-v1.5`.
+
+**Three design choices and why:**
+1. **Page-bounded (chunks never cross a page).** Each chunk therefore carries
+   exactly one `page_number`, which maps directly onto the eval set's
+   `evidence_page_num`. This buys a cheap, objective, LLM-free retrieval metric
+   (hit@k / recall@k at the page level). Tradeoff: a table spanning a page
+   break is split — accepted for the baseline; cross-page chunking is reserved
+   as a Phase-E variant.
+2. **Recursive natural-boundary splitting** (blank line -> newline -> sentence
+   -> word, then a hard token split only as a last resort). No atom exceeds
+   `chunk_size`, so single-line table rows are never cut mid-row — the same
+   row-coherence property that motivated the parser choice (§3) is preserved
+   through to the chunk.
+3. **Size measured in TOKENS with the embedder's own tokenizer.** Guarantees a
+   chunk never overflows the model's context window (silent tail truncation at
+   embed time). Because the sweep's candidate embedders (MiniLM, bge-small,
+   bge-base) all use near-identical BERT WordPiece vocabularies, token counts
+   are comparable across models, keeping `chunk_size` a clean independent
+   variable.
+
+**Overlap** is implemented by backstepping whole atoms from a chunk's end until
+>= `chunk_overlap` tokens are carried into the next chunk (verified: 52 shared
+boundary tokens for a 50-token target — the +2 is the snap to the atom
+boundary), with a guaranteed forward-progress guard.
+
+**Outcome (baseline s256_o50, full corpus):**
+- **211,671 chunks** from 368 docs; mean **575 chunks/doc**.
+- tokens/chunk: mean 222, median 240, p95 255, max 256 (hard cap holds). The
+  mean sitting below the median is the expected short-tail-chunk signature of
+  page-bounded chunking. Build time ~5.5 min (one-off per config).
+
+**Reproducibility:** `python src/chunk/build_chunks.py --config
+configs/chunk_baseline.yaml`. Output columns: `chunk_id`
+(`{doc}__p{page}__c{idx}`), `doc_name`, `page_number`, `chunk_index`, `text`,
+`n_tokens`, `n_chars`.
