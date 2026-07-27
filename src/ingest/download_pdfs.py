@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,10 @@ MANIFEST = Path('data/manifest.csv')
 OUT_DIR  = Path('data/raw_pdfs')
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-UA = 'nayeli.guzman@epita.fr'
+UA = os.getenv(
+    'FINANCEBENCH_USER_AGENT',
+    'financebench-rag educational-research contact@example.com',
+)
 
 session = requests.Session()
 retry = Retry(total=3, backoff_factor=1.5,

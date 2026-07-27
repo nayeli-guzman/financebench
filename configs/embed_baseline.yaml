@@ -1,0 +1,13 @@
+# Baseline embedding + index configuration.
+# The Phase-E sweep copies this file and varies embed_model and/or chunks.
+name: bge-small__s256_o50              # output -> data/index/bge-small__s256_o50/
+embed_model: BAAI/bge-small-en-v1.5    # sentence-transformers model id
+chunks: data/chunks/s256_o50.parquet   # chunk set to index
+normalize: true                        # unit-normalize -> inner product == cosine
+fp16: true                             # half precision on MPS: ~26% faster, no retrieval impact
+batch_size: 64
+# bge-v1.5 retrieval: instruction is prepended to the QUERY only (never to
+# passages). Stored here so the retriever applies it consistently; empty passage
+# prefix keeps the index instruction-free.
+query_instruction: "Represent this sentence for searching relevant passages: "
+passage_prefix: ""

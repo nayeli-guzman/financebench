@@ -1,0 +1,8 @@
+name: s384_o50_pilot
+strategy: recursive
+chunk_size: 384
+chunk_overlap: 50
+tokenizer: BAAI/bge-small-en-v1.5
+cross_page: false
+eval_docs_only: true
+eval_jsonl: data/financebench/financebench_pilot_30.jsonl

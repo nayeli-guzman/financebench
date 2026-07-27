@@ -1,0 +1,9 @@
+# Generator-size experiment. Retrieval and decoding settings are held equal to
+# the 3B baseline so the only independent variable is model size.
+name: qwen2.5-7b
+model: qwen2.5:7b       # Ollama Q4_K_M instruct model
+retrieval_k: 10
+max_new_tokens: 384
+num_ctx: 8192
+temperature: 0.0
+seed: 0

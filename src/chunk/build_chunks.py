@@ -17,6 +17,12 @@ Strategy = recursive (page-bounded):
   * Size is measured in TOKENS using the configured tokenizer, so a chunk never
     overflows the embedding model's context window.
 
+Strategy = fixed (page-bounded structure ablation):
+  * Each page is split into exact token windows with the configured overlap.
+  * Sentence, paragraph, and table-row boundaries are deliberately ignored.
+    Comparing this with recursive splitting isolates structure preservation
+    while keeping page attribution, size, overlap, and corpus fixed.
+
 Output columns:
   chunk_id (doc__p{page}__c{idx}), doc_name, page_number, chunk_index (global
   order within doc), text, n_tokens, n_chars.
@@ -26,6 +32,7 @@ Usage:
   python src/chunk/build_chunks.py --config ... --sample DOC   # print samples, write nothing
 """
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -35,6 +42,7 @@ from transformers import AutoTokenizer
 
 CLEAN_DIR = Path('data/clean')
 OUT_DIR = Path('data/chunks')
+EVAL_JSONL = Path('data/financebench/financebench_open_source.jsonl')
 SEPARATORS = ['\n\n', '\n', '. ', ' ']   # priority order for recursive splitting
 
 
@@ -46,6 +54,12 @@ def load_config(path: str) -> dict:
             raise ValueError(f'config missing required key: {key}')
     cfg.setdefault('strategy', 'recursive')
     cfg.setdefault('cross_page', False)
+    cfg.setdefault('eval_docs_only', False)
+    cfg.setdefault('eval_jsonl', str(EVAL_JSONL))
+    if cfg['strategy'] not in ('recursive', 'fixed'):
+        raise ValueError("strategy must be 'recursive' or 'fixed'")
+    if cfg['chunk_overlap'] >= cfg['chunk_size']:
+        raise ValueError('chunk_overlap must be smaller than chunk_size')
     return cfg
 
 
@@ -98,6 +112,24 @@ def pack(atoms: list[str], tok, size: int, overlap: int) -> list[tuple[str, int]
     return chunks
 
 
+def fixed_windows(text: str, tok, size: int,
+                  overlap: int) -> list[tuple[str, int]]:
+    """Exact token windows that intentionally ignore document structure."""
+    ids = tok.encode(text, add_special_tokens=False)
+    if not ids:
+        return []
+    step = size - overlap
+    chunks = []
+    for start in range(0, len(ids), step):
+        window = ids[start:start + size]
+        decoded = tok.decode(window, skip_special_tokens=True).strip()
+        if decoded:
+            chunks.append((decoded, len(window)))
+        if start + size >= len(ids):
+            break
+    return chunks
+
+
 def chunk_doc(df: pd.DataFrame, tok, cfg: dict) -> list[dict]:
     rows: list[dict] = []
     idx = 0
@@ -105,8 +137,14 @@ def chunk_doc(df: pd.DataFrame, tok, cfg: dict) -> list[dict]:
         text = page['text'] or ''
         if not text.strip():
             continue
-        atoms = split_to_atoms(text, tok, cfg['chunk_size'])
-        for ctext, ntok in pack(atoms, tok, cfg['chunk_size'], cfg['chunk_overlap']):
+        if cfg['strategy'] == 'fixed':
+            page_chunks = fixed_windows(
+                text, tok, cfg['chunk_size'], cfg['chunk_overlap'])
+        else:
+            atoms = split_to_atoms(text, tok, cfg['chunk_size'])
+            page_chunks = pack(
+                atoms, tok, cfg['chunk_size'], cfg['chunk_overlap'])
+        for ctext, ntok in page_chunks:
             rows.append({
                 'chunk_id':    f"{page['doc_name']}__p{page['page_number']}__c{idx}",
                 'doc_name':    page['doc_name'],
@@ -127,8 +165,10 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    print(f"config '{cfg['name']}': size={cfg['chunk_size']} overlap={cfg['chunk_overlap']} "
-          f"tokenizer={cfg['tokenizer']}")
+    scope = 'eval-docs' if cfg['eval_docs_only'] else 'full-corpus'
+    print(f"config '{cfg['name']}': strategy={cfg['strategy']} "
+          f"size={cfg['chunk_size']} overlap={cfg['chunk_overlap']} "
+          f"scope={scope} tokenizer={cfg['tokenizer']}")
     tok = AutoTokenizer.from_pretrained(cfg['tokenizer'])
 
     if args.sample:
@@ -141,6 +181,12 @@ def main() -> None:
         return
 
     docs = sorted(p.stem for p in CLEAN_DIR.glob('*.parquet'))
+    if cfg['eval_docs_only']:
+        eval_docs = {
+            json.loads(line)['doc_name']
+            for line in open(cfg['eval_jsonl'])
+        }
+        docs = [doc for doc in docs if doc in eval_docs]
     all_rows: list[dict] = []
     for doc in tqdm(docs):
         df = pd.read_parquet(CLEAN_DIR / f'{doc}.parquet')

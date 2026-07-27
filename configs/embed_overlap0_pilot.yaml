@@ -1,0 +1,11 @@
+name: bge-small__s256_o0_pilot
+embed_model: BAAI/bge-small-en-v1.5
+chunks: data/chunks/s256_o0_pilot.parquet
+normalize: true
+fp16: true
+batch_size: 64
+shard_size: 1024
+device: mps
+reuse_index: data/index/bge-small__s256_o50
+query_instruction: "Represent this sentence for searching relevant passages: "
+passage_prefix: ""

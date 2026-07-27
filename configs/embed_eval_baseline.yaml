@@ -1,0 +1,9 @@
+name: bge-small__s256_o50_eval
+embed_model: BAAI/bge-small-en-v1.5
+chunks: data/chunks/s256_o50_eval.parquet
+normalize: true
+fp16: true
+batch_size: 128
+device: mps
+query_instruction: "Represent this sentence for searching relevant passages: "
+passage_prefix: ""

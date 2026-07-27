@@ -1,0 +1,9 @@
+# Baseline generation configuration (served locally by Ollama).
+# The Phase-E sweep copies this and varies model / retrieval_k.
+name: qwen2.5-3b
+model: qwen2.5:3b       # Ollama model tag (Q4_K_M, instruct)
+retrieval_k: 10         # top-k chunks fed to the LLM as context
+max_new_tokens: 384
+num_ctx: 8192           # context window; must fit ~2.8k-token prompt + generation
+temperature: 0.0        # greedy decoding -> deterministic
+seed: 0                 # reproducibility
